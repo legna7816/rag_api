@@ -12,10 +12,10 @@ WORKDIR /app
 # 의존성 설치
 # 중요: requirments.txt만 먼저 복사하는 이유는 Docker 레이어 캐싱 때문
 # 코드만 수정했을 때 패키지 재설치를 건너뛸 수 있어 빌드가 훨씬 빨라짐
-COPY requirments.txt .
+COPY requirements.txt .
 
 # --no-cache-dir: pip 캐시를 남지지 않아 이미지 크기 감소
-RUN pip install --no-cache-dir -r requirments.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 모델 사전 다운로드 (ML d앱 특유의 최적화)
 # 이 단계가 없으면 컨테이너를 실행할 때마다 모델을 새로 다운로드함
