@@ -1,6 +1,9 @@
+import os
+import json
 import torch
 import numpy as np
-from fastapi import FastAPI
+import faiss
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -16,7 +19,7 @@ print(f"사용 디바이스: {device}")
 print("임베딩 모델 로딩 중...")
 embed_model = SentenceTransformer('jhgan/ko-sroberta-multitask')
 
-print("생성 모델 로딩 중... (최초 실행 시 다운로드로 몇 분 소요)")
+print("생성 모델 로딩 중...")
 
 gen_model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 gen_tokenizer = AutoTokenizer.from_pretrained(gen_model_name)
@@ -28,8 +31,15 @@ gen_model.to(device)
 gen_model.eval()
 print("모델 로딩 완료")
 
-# 2. 지식 베이스
-documents = [
+# 2. FAISS 인덱스 & 문서 저장소
+# 인덱스는 벡터만 저장하고 원본 텍스트는 모름
+# -> documents 리스트와 인덱스 번호를 항상 같은 순서로 유지해야 함
+INDEX_PATH = "documents.index"
+DOCS_PATH = "documents.json"
+
+DIMENSION = 768    # ko-sroberta-multitask의 출력 차원
+
+DEFAULT_DOCUMENTS = [
     "타이타닉은 1912년 4월 15일 빙산과 충돌해 침몰한 영국의 여객선이다.",
     "파이썬은 1991년 귀도 반 로섬이 개발한 프로그래밍 언어이다.",
     "BERT는 구글이 2018년에 발표한 자연어처리 모델이다.",
@@ -37,7 +47,40 @@ documents = [
     "RAG는 검색과 생성을 결합한 자연어처리 기법이다.",
     "딥러닝은 인공신경망을 여러 층으로 쌓아 학습하는 머신러닝의 한 분야이다.",
 ]
-doc_embeddings = embed_model.encode(documents)
+def embed_and_normalize(texts):
+    """텍스트를 임베딩하고 정규화 (정규화해야 내적 = 코사인 유사도)"""
+    if isinstance(texts, str):
+        texts = [texts]    # 문자열 하나면 리스트로 감싸기
+    vecs = embed_model.encode(texts).astype('float32')
+    vecs = np.atleast_2d(vecs)
+    faiss.normalize_L2(vecs)
+    return vecs
+
+def build_index():
+    """저장된 인덱스가 있으면 불러오고, 없으면 새로 생성"""
+    if os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH):
+        print("저장된 인덱스 불러오는 중...")
+        idx = faiss.read_index(INDEX_PATH)
+        with open(DOCS_PATH, 'r', encoding='utf-8') as f:
+            docs = json.load(f)
+        print(f"인덱스 로드 완료 (문서 {len(docs)}개)")
+        return idx, docs
+
+    print("세 인덱스 생성 중...")
+    idx = faiss.IndexFlatIP(DIMENSION)
+    idx.add(embed_and_normalize(DEFAULT_DOCUMENTS))
+    docs = DEFAULT_DOCUMENTS.copy()
+    save_index(idx, docs)
+    print(f"인덱스 생성 완료 (문서 {len(docs)}개)")
+    return idx, docs
+
+def save_index(idx, docs):
+    """인덱스와 문서 목록을 파일로 저장 (서버 재시작 시 재사용)"""
+    faiss.write_index(idx, INDEX_PATH)
+    with open(DOCS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(docs, f, ensure_ascii=False, indent=2)
+
+index, documents = build_index()
 
 # 3. 요청/응답 형식 정의 (Pydantic)
 class QueryRequest(BaseModel):
@@ -53,16 +96,25 @@ class SearchResponse(BaseModel):
     question: str
     results: list[dict]
 
-# 4. RAG 로직
-def cosine_sim(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * (np.linalg.norm(b)))
+class AddDocumentRequest(BaseModel):
+    documents: list[str]
 
+class AddDocumentResponse(BaseModel):
+    added: int
+    total: int
+
+# 4. RAG 로직
 def search_with_scores(query, top_k=2):
-    """유사도 점수까지 함께 반환"""
-    query_vec = embed_model.encode(query)
-    scores = [cosine_sim(query_vec, doc_vec) for doc_vec in doc_embeddings]
-    top_indices = np.argsort(scores)[::-1][:top_k]
-    return [{"document": documents[i], "score": float(scores[i])} for i in top_indices]
+    """FAISS 인덱스로 유사 문서 검색"""
+    query_vec = embed_and_normalize(query)
+    scores, indices = index.search(query_vec, min(top_k, index.ntotal))
+
+    results = []
+    for i, s in zip(indices[0], scores[0]):
+        if i == -1:    # 결과가 부족할 때 FAISS는 -1을 반환함
+            continue
+        results.append({"document": documents[i], "score": float(s)})
+    return results
 
 def generate_answer(query, context):
     prompt = f"""다음 참고 자료를 바탕으로 질문에 답하세요. 참고 자료에 없는 내용은 답하지 마세요.
@@ -93,12 +145,29 @@ def generate_answer(query, context):
 @app.get("/")
 def root():
     """서버 상태 확인 (헬스 체크)"""
-    return {"status": "running", "device": str(device)}
+    return {
+        "status": "running",
+        "device": str(device),
+        "indexed_documents": index.ntotal
+    }
 
 @app.get("/documents")
 def list_documents():
-    """지식 베이스에 등록된 문서 목록 조회"""
+    """등록된 문서 목록 조회"""
     return {"count": len(documents), "documents": documents}
+
+@app.post("/documents", response_model=AddDocumentResponse)
+def add_documents(request: AddDocumentRequest):
+    """새 문서를 인덱스에 추가 (서버 재시작 없이 지식 베이스 확장)"""
+    if not request.documents:
+        raise HTTPException(status_code=400, detail="문서가 비어있습니다.")
+    # 임베딩 -> 정규화 -> 인덱스에 추가
+    index.add(embed_and_normalize(request.documents))
+    # 인덱스 번호와 순서를 맞추기 위해 리스트에도 동일하게 추가
+    documents.extend(request.documents)
+    save_index(index, documents)
+
+    return AddDocumentResponse(added=len(request.documents), total=index.ntotal)
 
 @app.post("/search", response_model=SearchResponse)
 def search_only(request: QueryRequest):

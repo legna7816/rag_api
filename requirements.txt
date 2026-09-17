@@ -12,6 +12,7 @@ cryptography==48.0.0
 debugpy==1.8.17
 decorator==5.2.1
 executing==2.2.1
+faiss-cpu==1.15.1
 fastapi==0.141.1
 filelock==3.32.7
 fsspec==2026.7.0
