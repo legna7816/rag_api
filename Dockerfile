@@ -27,8 +27,8 @@ SentenceTransformer('jhgan/ko-sroberta-multitask')"
 
 RUN python -c "\
 from transformers import AutoTokenizer, AutoModelForCausalLM; \
-AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct'); \
-AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')"
+AutoTokenizer.from_pretrained('Qwen/Qwen2.5-1.5B-Instruct'); \
+AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-1.5B-Instruct')"
 
 # 애플리케이션 코드 복사
 # 코드는 자주 바뀌므로 마지막에 복사 (앞 레이어 캐시를 최대한 활용)
