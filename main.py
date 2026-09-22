@@ -21,7 +21,7 @@ embed_model = SentenceTransformer('jhgan/ko-sroberta-multitask')
 
 print("생성 모델 로딩 중...")
 
-gen_model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+gen_model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 gen_tokenizer = AutoTokenizer.from_pretrained(gen_model_name)
 gen_model = AutoModelForCausalLM.from_pretrained(
     gen_model_name,
@@ -117,13 +117,13 @@ def search_with_scores(query, top_k=2):
     return results
 
 def generate_answer(query, context):
-    prompt = f"""다음 참고 자료를 바탕으로 질문에 답하세요. 참고 자료에 없는 내용은 답하지 마세요.
+    prompt = f"""당신은 레시피 추천 챗봇입니다. 아래 [레시피 목록]에 있는 요리만 추천하세요. 목록에 없는 요리나 정보는 절대 언급하지 마세요. 영양 성분에 대한 추가 설명은 하지 말고, 요리명과 이유만 간단히 답하세요.
 
-참고 자료:
+[레시피 목록]
 {context}
 
-질문: {query}
-답변:"""
+사용자 질문: {query}
+답변 (요리명과 매운 이유만 1~2줄로):"""
     messages = [{"role": "user", "content": prompt}]
     text = gen_tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
@@ -133,7 +133,7 @@ def generate_answer(query, context):
     with torch.no_grad():
         outputs = gen_model.generate(
             **inputs,
-            max_new_tokens=100,
+            max_new_tokens=250,
             temperature=0.7,
             do_sample=True
         )
